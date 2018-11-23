@@ -14,13 +14,13 @@ if [ $# -eq 1 ]
 	parnum=$2
 fi
 
-ssh jegminat@euler.ethz.ch bash ./$folder/run_main.sh $folder -s main # bayesian
+# ssh jegminat@euler.ethz.ch bash ./$folder/run_main.sh $folder -s main # bayesian
 counter=0
 parend=$((parnum-1))
 while [ $counter -le $parend ]
     do
     echo submit job $counter
-    ssh jegminat@euler.ethz.ch bash ./$folder/run_main.sh $folder -s main -N $parnum -i $counter -c True
+    ssh jegminat@euler.ethz.ch bash ./$folder/run_main.sh $folder -s main -N $parnum -i $counter # -c True
     ((counter++))
 done
 

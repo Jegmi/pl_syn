@@ -15,6 +15,12 @@ import torch as T
 #import torch.optim as optim
 #from torchvision import datasets, transforms
 #from torch.autograd import Variable
+
+import os
+import sys
+# add root folder to import path
+sys.path.append(os.getcwd() + '/../')
+
 import numpy as np
 import matplotlib.pyplot as plt
 from time import time
@@ -31,25 +37,19 @@ from torch.distributions.normal import Normal as Normal
 import matplotlib
 import copy
 
-from helpers.helpers import save_obj, load_obj
-
 import itertools as it
 
 import pandas as pd
 
 #clear_all()
 
-import os
-import sys
-# add root folder to import path
-sys.path.append(os.getcwd() + '/../')
 
 
 from scipy.integrate import RK45
 # fun, t0, y0, t_bound, max_step=inf, rtol=0.001, atol=1e-06, vectorized=False
 # take RK: re-use old time step. No wrapper overhead.
 
-
+from helpers.helpers import save_obj, load_obj
 from helpers.helpers import smooth, plt_idxs, eps_lin, save_obj
 from my_plotters.my_plotters import plt_filter,my_savefig
 
@@ -337,7 +337,7 @@ class Synapse():
                         
         self.size_in_MB = self.approx_size()
         
-    def _x_minus_phi_dash_over_phi(self,x):
+    def _x_plus_phi_dash_over_phi(self,x):
         return(x + self._phi_dash_over_phi(x))
     
     
@@ -641,9 +641,10 @@ class Synapse():
             
         # create short hands from new paramters
         self.load_sh()
-
         return(pars)            
 
+
+    
 
     
     def set_vars(self,protocol=None,init_dict=None,k=0):
@@ -1084,7 +1085,7 @@ class Synapse():
             if self.pars['bayesian']:
                 # var update:  sig^4*xi^2*(y*[phi''/phi - (phi'/phi)^2] - phi'')            
                 ds2 = - T.pow(eq['xi*sigma^2'],2)*self._phi_dash_over_phi(z)*(
-                    y*self._x_minus_phi_dash_over_phi(z) 
+                    y*self._x_plus_phi_dash_over_phi(z) 
                     + eq['Phi']*z*self.sh['g0*dt'])
 
             # read outs for debugging 
@@ -1531,6 +1532,32 @@ class Synapse():
             
             return(export)
 
+    def get_sig0_u(self):
+        """ compute expected variance based on prior """
+        p = self.pars                                                
+        if p['PL']['ON']:            
+            pre_fac = (p['PL']['alpha']**2 +  p['PL']['beta']**2)                        
+            meanx2 = (p['nu']*p['tau_u'])**2
+            M_prior = np.array(np.exp(p['OU']['mu'] + 0.5*p['OU']['sig2']))
+            S2_prior = np.power(M_prior,2)*(np.exp(p['OU']['sig2'])-1)
+            return(pre_fac*meanx2.dot(S2_prior))                                    
+        else: 
+            print('only implemented for Peter so far... skip')
+            return(-1)
+
+    def get_V_pi(self):
+        """ compute expected membrane delta_V based on prior """
+        p = self.pars
+        if p['PL']['ON']:
+            pre_fac = (p['PL']['alpha'] +  p['PL']['beta'])
+            meanx = p['nu']*p['tau_u']
+            M_prior = np.array(T.exp(p['OU']['mu'] + 0.5*p['OU']['sig2']))            
+            return(pre_fac*meanx.dot(M_prior))
+        else: 
+            print('only implemented for Peter so far... skip')
+            return(-1)
+
+        
 
     def log_normal_sample(self,mu,sig2,input_type='LOG'):
         """ draw samples from log-normal. 
@@ -1575,6 +1602,20 @@ class Synapse():
         # from predictive coding        
         beta = p['PL']['beta']
         
+        sig2_0_u = self.get_sig0_u()
+        sig2_0_u = 4
+        p['sig0_u'] = float(np.sqrt(sig2_0_u))
+        p['th'] *= p['sig0_u']
+        print('updating sig0_u=%f and th=%f' % (p['sig0_u'],p['th']))
+                
+        # Potential extension: compute V_dyn as running average
+        self.V_pi = self.get_V_pi()
+        self.V_dyn = p['th'] - self.V_pi
+        # priors
+        M_prior = T.exp(p['OU']['mu'] + 0.5*p['OU']['sig2'])
+        S2_prior = T.pow(M_prior,2)*(T.exp(p['OU']['sig2'])-1)
+
+        
         # smoothing 
         gamma = 1 - p['dt']/p['tau_running_ave']
 
@@ -1582,7 +1623,7 @@ class Synapse():
         k_till_out = self.xSteps / min(1000,self.xSteps)
 
         # expected input rates
-        varx = T.tensor(p['nu']*p['tau_u']/2,dtype=T.float32)
+        #varx = T.tensor(p['nu']*p['tau_u']/2,dtype=T.float32)
         meanx = T.tensor(p['nu']*p['tau_u'],dtype=T.float32)
         meanx2 = T.pow(meanx,2)
                             
@@ -1646,11 +1687,12 @@ class Synapse():
                                 v['m'][ii_Sx,k],v['s2'][ii_Sx,k])
                     elif p['PL']['k_samp'] > 0:
                         # k sampling
+                        #print('in')
                         M_sample = self.log_normal_sample(
                                 M[ii_Sx],M[ii_Sx]*p['PL']['k_samp'],
                                                         input_type='W')
                     elif p['PL']['k_samp'] == 0:
-                        M_sample = M
+                        M_sample = M[ii_Sx]
                         
                 else:
     #                 E[w] = exp(lambda), var[w] = k*E[w]
@@ -1658,7 +1700,7 @@ class Synapse():
                         M_sample = self.log_normal_sample(v['m'][ii_Sx,k],None,
                                                       input_type='kLOG')
                     else:
-                        M_sample = M
+                        M_sample = M[ii_Sx]
                     
                                     
                 if T.sum(M_sample<0) > 0:
@@ -1666,6 +1708,9 @@ class Synapse():
                     ii = M_sample<0
                     print(np.where(np.array(ii)))    
                     
+                #print('ii',ii_Sx)
+                #print('sam',M_sample)
+                
                 v['w_r'][ii_Sx] = M_sample
                 
                 if T.isnan(M_sample).sum() > 0:
@@ -1681,7 +1726,9 @@ class Synapse():
                     
             # draw next spike
             w_star = T.exp(v['w'][:,k])
-            o['u'][k] = (alpha*w_star + beta*v['w_r']).dot(v['x']) + p['th'] 
+            
+            o['u'][k] = (alpha*w_star + beta*v['w_r']).dot(v['x']) + self.V_dyn
+            
             gdt = (self.g(o['u'][k]/p['sig0_u'])).item()*sh['g0*dt']
             # check if still bounded
             if gdt > 1:
@@ -1690,6 +1737,8 @@ class Synapse():
             o['g'][k] = gdt/p['dt']
             o['Sy'][k] = int(np.random.binomial(1,gdt))
             y = T.tensor(o['Sy'][k],dtype=T.float32) #if k > 0 else 0            
+
+
 
             ###### prior            
             if p['bayesian']:
@@ -1714,7 +1763,7 @@ class Synapse():
 
             elif p['PL']['opt'] == 2:
                 # w_r estimated, x known (problem: ubar relies on M,Sx)
-                o['ubar'][k] = p['th'] + v['x'].dot(M)*(alpha + beta)   #+ beta*self.cur_noise 
+                o['ubar'][k] = v['x'].dot(M)*(alpha + beta) + self.V_dyn  #p['th']+ beta*self.cur_noise 
                 if p['bayesian']:
                     o['sig2_u'][k] = (alpha**2+beta**2)*(S2.dot(T.pow(v['x'],2)))                                        
                 else:
@@ -1723,7 +1772,7 @@ class Synapse():
             
             elif p['PL']['opt'] == 3:
                 # w_r, x estimated (problem: ubar still relies on M)
-                o['ubar'][k] = p['th'] + (alpha + beta)*meanx.dot(M)
+                o['ubar'][k] = (alpha + beta)*meanx.dot(M) + self.V_dyn
                 
                 if p['bayesian']:
 #                    o['sig2_u'][k] = (alpha**2 + beta**2)*(S2.dot(varx + meanx2
@@ -1738,11 +1787,8 @@ class Synapse():
             elif p['PL']['opt'] == 4:
                 # w_r, x estimated, M taken as prior       
                 # ou mean and var in weight space                
-                if self.K == 0: # compute only once
-                    M_prior = T.exp(p['OU']['mu'] + 0.5*p['OU']['sig2'])
-                    S2_prior = T.pow(M_prior,2)*(T.exp(p['OU']['sig2'])-1)
 
-                o['ubar'][k] = p['th'] + (alpha + beta)*meanx.dot(M_prior)
+                o['ubar'][k] = (alpha + beta)*meanx.dot(M_prior) + self.V_dyn
                 
                 if p['bayesian']:
 #                    o['sig2_u'][k] = (alpha**2 + beta**2)*(
@@ -1764,18 +1810,20 @@ class Synapse():
                 if p['bayesian']:
                     o['sig2_u'][k+1] = o['sig2_u'][k]*gamma + (1-gamma
                                      )*T.pow(o['u'][k] - o['ubar'][k],2)
+                                     #)*T.pow(o['u'][k] - p['th'],2)
                 else:
                     o['sig2_u'][k+1] = 0
-                
-                if self.K == 0: # compute only once
-                    M_prior = T.exp(p['OU']['mu'] + 0.5*p['OU']['sig2'])
-                    S2_prior = T.pow(M_prior,2)*(T.exp(p['OU']['sig2'])-1)
-
-                o['ubar'][k] = p['th'] + (alpha + beta)*meanx.dot(M_prior)
+                                
                 V_vec = o['ubar'][k] - (alpha + beta)*meanx*M_prior + (
                         v['x']*(alpha*M + beta*v['w_r']))
+                
+                o['ubar'][k] = p['th'] #+ (alpha + beta)*meanx.dot(M_prior)                
                                 
                 #V_vec = o['ubar'][k] 
+            
+            elif p['PL']['opt'] == 6:
+                # new test
+                print('todo')
             
             sigV = T.sqrt(p['sig0_u']**2 + o['sig2_u'][k])
                             
@@ -1794,10 +1842,11 @@ class Synapse():
 #            if 'warning: sanity' not in p:
 #                print('Setting V_vec / sigV to std values')
 #                p['warning: sanity'] = True
+
             
             eq['Phi'] = self.g(z)
             eq['delta'] = y - eq['Phi']*sh['g0*dt']
-
+                        
             # pre synaptic factors
             eq['xi*sigma^2'] = v['s2'][:,k]*alpha*M*v['x']/sigV
             
@@ -1807,7 +1856,7 @@ class Synapse():
             if p['bayesian']:
                 # var update:  sig^4*xi^2*(y*[phi''/phi - (phi'/phi)^2] - phi'')            
                 ds2_like = - T.pow(eq['xi*sigma^2'],2)*self._phi_dash_over_phi(z)*(
-                    y*self._x_minus_phi_dash_over_phi(z) 
+                    y*self._x_plus_phi_dash_over_phi(z) # x - phi'/phi
                     + eq['Phi']*z*sh['g0*dt'])
             else:
                 ds2_like = 0
@@ -1823,6 +1872,12 @@ class Synapse():
             v['m'][:,k+1] = v['m'][:,k] + dm_prior + dm_like
             v['s2'][:,k+1] = v['s2'][:,k] + ds2_prior + ds2_like
                                         
+            # debugging
+            o['gbar'][k] = self.g(o['ubar'][k]/sigV)*sh['g0*dt']
+            o['delta'][k] = o['g'][k] - o['gbar'][k]
+            
+
+            
             # error: self.res_online += T.pow(v['m'][:,k] - v['w'][:,k],2)
             # filter: 
             ## Timing
@@ -2889,18 +2944,21 @@ if __name__== "__main__":
     iter_test = False
     syn_test = True
     
+    # findings: 
+    # opt=5 -> problem
+    # <u> = 0 -> why?
     
     if syn_test:
         
         para = 'Peter'
         bayesian = True
         cov0 = None #0.3
-        dt = 0.005
+        dt = 0.001
         dim = 1000
         #mdims = plt_idxs(plt_num=5,dim=dim)        
-        #mdims = [0,4,10,200]
+        mdims = [0,4,10,200]
         mdims = None
-        opt = 5
+        opt = 4
         step_max = 48816
         step_max = 50000
         
@@ -2910,15 +2968,15 @@ if __name__== "__main__":
                         
         pars_extra = {'PL':{'ON':True,
                             'Sample':True,
-                            'alpha':1,
-                            'beta':-1,
+                            'alpha':0.5,
+                            'beta':0.5,
                             'opt':opt,
                             'b_samp':False},
                       'OU':{'tau':2*10**3,'mu':-0.669},
                       'step_out':1, # down sample
-                      'th':-0,
+                      'th': -2.1,
                       'tau_u':0.01,
-                      'g0':60,
+                      'g0':60, #60,
                       'time_between_output':60,
                       'plot-flags': {'save-output':True},
                       'mu_bounds':None, # works

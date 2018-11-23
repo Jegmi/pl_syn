@@ -18,4 +18,4 @@ fi
 ssh jegminat@euler.ethz.ch mkdir ./$folder
 scp -r ./src/* jegminat@euler.ethz.ch:/cluster/home/jegminat/$folder/
 
-ssh jegminat@euler.ethz.ch bash ./$folder/run_pre.sh -s pre -N $parnum
+ssh jegminat@euler.ethz.ch bash ./$folder/run_pre.sh -s gen -N $parnum
